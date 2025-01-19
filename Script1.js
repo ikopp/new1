@@ -349,25 +349,47 @@ const preloadAudioFiles = async () => {
     }
 };
 
-// Merge multiple audio buffers into one
-const mergeAudioBuffers = (buffers) => {
-    const totalLength = buffers.reduce((sum, buffer) => sum + buffer.length, 0);
-    const mergedBuffer = audioContext.createBuffer(
-        1, // Mono channel
-        totalLength,
-        audioContext.sampleRate
-    );
+// Merge smaller chunks of audio buffers
+const mergeAudioBuffersInChunks = (buffers, maxChunkLength = 300) => {
+    const sampleRate = audioContext.sampleRate;
+    const chunks = [];
+    let currentChunkBuffers = [];
+    let currentChunkLength = 0;
 
-    let offset = 0;
+    // Group buffers into chunks
     buffers.forEach((buffer) => {
-        mergedBuffer.copyToChannel(buffer.getChannelData(0), 0, offset);
-        offset += buffer.length;
+        if (currentChunkLength + buffer.duration <= maxChunkLength) {
+            currentChunkBuffers.push(buffer);
+            currentChunkLength += buffer.duration;
+        } else {
+            chunks.push(currentChunkBuffers);
+            currentChunkBuffers = [buffer];
+            currentChunkLength = buffer.duration;
+        }
     });
 
-    return mergedBuffer;
+    if (currentChunkBuffers.length > 0) {
+        chunks.push(currentChunkBuffers);
+    }
+
+    // Merge each chunk and store in a list
+    const mergedChunks = chunks.map((chunkBuffers) => {
+        const totalLength = chunkBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
+        const mergedBuffer = audioContext.createBuffer(1, totalLength, sampleRate);
+
+        let offset = 0;
+        chunkBuffers.forEach((buffer) => {
+            mergedBuffer.copyToChannel(buffer.getChannelData(0), 0, offset);
+            offset += buffer.length;
+        });
+
+        return mergedBuffer;
+    });
+
+    return mergedChunks;
 };
 
-// Convert AudioBuffer to a WAV Blob
+// Convert AudioBuffer to WAV Blob
 const audioBufferToWavBlob = (buffer) => {
     const offlineContext = new OfflineAudioContext(1, buffer.length, buffer.sampleRate);
     const source = offlineContext.createBufferSource();
@@ -379,55 +401,6 @@ const audioBufferToWavBlob = (buffer) => {
         const wavData = audioBufferToWav(renderedBuffer);
         return new Blob([wavData], { type: "audio/wav" });
     });
-};
-
-// Convert AudioBuffer to WAV format
-const audioBufferToWav = (buffer) => {
-    const numOfChannels = buffer.numberOfChannels;
-    const sampleRate = buffer.sampleRate;
-    const format = 1; // PCM
-    const bitDepth = 16;
-
-    let blockAlign = numOfChannels * bitDepth / 8;
-    let byteRate = sampleRate * blockAlign;
-
-    let wavBuffer = new ArrayBuffer(44 + buffer.length * blockAlign);
-    let view = new DataView(wavBuffer);
-
-    writeString(view, 0, "RIFF");
-    view.setUint32(4, 36 + buffer.length * blockAlign, true);
-    writeString(view, 8, "WAVE");
-
-    writeString(view, 12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, format, true);
-    view.setUint16(22, numOfChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, bitDepth, true);
-
-    writeString(view, 36, "data");
-    view.setUint32(40, buffer.length * blockAlign, true);
-
-    let offset = 44;
-    for (let i = 0; i < buffer.length; i++) {
-        for (let channel = 0; channel < numOfChannels; channel++) {
-            let sample = buffer.getChannelData(channel)[i];
-            let intSample = Math.max(-1, Math.min(1, sample));
-            view.setInt16(offset, intSample < 0 ? intSample * 0x8000 : intSample * 0x7FFF, true);
-            offset += 2;
-        }
-    }
-
-    return wavBuffer;
-};
-
-// Helper function to write a string to a DataView
-const writeString = (view, offset, string) => {
-    for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-    }
 };
 
 // Save Blob to local file
@@ -447,10 +420,15 @@ const saveBlobToFile = async (blob, filename) => {
     await writable.close();
 };
 
-// Event listener for Generate and Save button
+// Main function for generating and saving audio
 document.getElementById("generateButton").addEventListener("click", async () => {
     const textInput = document.getElementById("textInput").value;
     const words = textInput.split(" ");
+
+    // Preload audio files if not already done
+    if (Object.keys(preloadedAudioBuffers).length === 0) {
+        await preloadAudioFiles();
+    }
 
     const buffers = words
         .map((word) => preloadedAudioBuffers[word.toLowerCase()])
@@ -461,16 +439,16 @@ document.getElementById("generateButton").addEventListener("click", async () => 
         return;
     }
 
-    const mergedBuffer = mergeAudioBuffers(buffers);
-    const audioBlob = await audioBufferToWavBlob(mergedBuffer);
+    // Merge buffers in smaller chunks
+    const mergedChunks = mergeAudioBuffersInChunks(buffers, 300); // Maximum 5 seconds per chunk
 
-    // Save the audio file locally
-    await saveBlobToFile(audioBlob, "output.wav");
+    // Convert each chunk to a Blob and save
+    for (let i = 0; i < mergedChunks.length; i++) {
+        const chunkBlob = await audioBufferToWavBlob(mergedChunks[i]);
+        await saveBlobToFile(chunkBlob, `output_chunk_${i + 1}.wav`);
+    }
 
-    // Set the audio file to the player
-    const audioPlayer = document.getElementById("audioPlayer");
-    audioPlayer.src = URL.createObjectURL(audioBlob);
-    audioPlayer.style.display = "block";
+    alert("Audio saved in chunks successfully!");
 });
 // Preload audio files on page load
 preloadAudioFiles();
