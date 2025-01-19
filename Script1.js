@@ -331,8 +331,9 @@ const wordToAudioMap = {
 const preloadedAudioBuffers = {};
 let currentSourceNodes = []; // Keep track of currently playing nodes
 let isPaused = false; // Pause state
-let currentOffset = 0; // Keep track of playback offset
+let currentOffset = 0; // Playback offset
 let currentStartTime = 0; // When playback started
+let words = []; // Array of words to play
 
 // Function to load and decode an audio file
 const loadAudioFile = async (url) => {
@@ -355,12 +356,15 @@ const preloadAudioFiles = async () => {
 };
 
 // Play preloaded audio sequentially
-const playSequentialAudio = async (wordArray) => {
+const playSequentialAudio = async (wordArray, startOffset = 0) => {
     currentSourceNodes = [];
-    let currentTime = audioContext.currentTime - currentOffset;
+    let currentTime = audioContext.currentTime - startOffset;
     currentStartTime = audioContext.currentTime;
 
-    for (const word of wordArray) {
+    for (let i = 0; i < wordArray.length; i++) {
+        if (i < Math.floor(startOffset)) continue; // Skip words already played
+
+        const word = wordArray[i];
         const buffer = preloadedAudioBuffers[word.toLowerCase()];
         if (buffer) {
             const source = audioContext.createBufferSource();
@@ -381,6 +385,7 @@ const playSequentialAudio = async (wordArray) => {
 const pauseAudio = () => {
     currentOffset = audioContext.currentTime - currentStartTime;
     currentSourceNodes.forEach(({ source }) => source.stop());
+    currentSourceNodes = [];
     isPaused = true;
 };
 
@@ -394,20 +399,21 @@ const stopAudio = () => {
 
 // Resume playback
 const resumeAudio = async () => {
-    const textInput = document.getElementById("textInput").value;
-    const words = textInput.split(" ");
-    const remainingWords = words.slice(Math.floor(currentOffset));
-    await playSequentialAudio(remainingWords);
+    await playSequentialAudio(words, currentOffset);
     isPaused = false;
 };
 
 // Event listeners
 document.getElementById("playButton").addEventListener("click", async () => {
     const textInput = document.getElementById("textInput").value;
-    const words = textInput.split(" ");
+
+    // Check if playback is paused
     if (isPaused) {
         resumeAudio();
     } else {
+        // Start new playback from the beginning
+        words = textInput.split(" ");
+        currentOffset = 0; // Reset offset
         await playSequentialAudio(words);
     }
 
@@ -426,7 +432,6 @@ document.getElementById("stopButton").addEventListener("click", () => {
     document.getElementById("pauseButton").disabled = true;
     document.getElementById("stopButton").disabled = true;
 });
- 
+
 // Preload audio files on page load
 preloadAudioFiles();
-
