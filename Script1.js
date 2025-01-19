@@ -398,7 +398,7 @@ const audioBufferToWavBlob = (buffer) => {
     source.start();
 
     return offlineContext.startRendering().then((renderedBuffer) => {
-        const wavData = audioBufferToWav(renderedBuffer);
+        const wavData = audioBufferToWavBlob(renderedBuffer);
         return new Blob([wavData], { type: "audio/wav" });
     });
 };
