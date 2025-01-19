@@ -472,3 +472,5 @@ document.getElementById("generateButton").addEventListener("click", async () => 
     audioPlayer.src = URL.createObjectURL(audioBlob);
     audioPlayer.style.display = "block";
 });
+// Preload audio files on page load
+preloadAudioFiles();
