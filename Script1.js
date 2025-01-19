@@ -246,7 +246,7 @@
 
         function analyzeLine(line) {
             const words = line.split(' ');
-            return words.map(analyzeWord).join('<span class="comma"> ، </span>');
+            return words.map(analyzeWord).join('<span class="comma"> </span>');
         }
 
         function analyzeWord(word) {
@@ -328,7 +328,11 @@ const wordToAudioMap = {
     "ياء": `${audioFolderPath}ya.mp3`  
 };
 
-const preloadedAudioBuffers = {}; // Store preloaded audio buffers
+const preloadedAudioBuffers = {};
+let currentSourceNodes = []; // Keep track of currently playing nodes
+let isPaused = false; // Pause state
+let currentOffset = 0; // Keep track of playback offset
+let currentStartTime = 0; // When playback started
 
 // Function to load and decode an audio file
 const loadAudioFile = async (url) => {
@@ -352,7 +356,9 @@ const preloadAudioFiles = async () => {
 
 // Play preloaded audio sequentially
 const playSequentialAudio = async (wordArray) => {
-    let currentTime = audioContext.currentTime;
+    currentSourceNodes = [];
+    let currentTime = audioContext.currentTime - currentOffset;
+    currentStartTime = audioContext.currentTime;
 
     for (const word of wordArray) {
         const buffer = preloadedAudioBuffers[word.toLowerCase()];
@@ -362,7 +368,8 @@ const playSequentialAudio = async (wordArray) => {
             source.connect(audioContext.destination);
             source.start(currentTime);
 
-            // Schedule the next audio based on the current buffer duration
+            // Track source node and its duration
+            currentSourceNodes.push({ source, duration: buffer.duration });
             currentTime += buffer.duration;
         } else {
             console.warn(`No preloaded audio found for word: "${word}"`);
@@ -370,13 +377,56 @@ const playSequentialAudio = async (wordArray) => {
     }
 };
 
-// Add event listener to the button
+// Pause playback
+const pauseAudio = () => {
+    currentOffset = audioContext.currentTime - currentStartTime;
+    currentSourceNodes.forEach(({ source }) => source.stop());
+    isPaused = true;
+};
+
+// Stop playback
+const stopAudio = () => {
+    currentSourceNodes.forEach(({ source }) => source.stop());
+    currentSourceNodes = [];
+    currentOffset = 0;
+    isPaused = false;
+};
+
+// Resume playback
+const resumeAudio = async () => {
+    const textInput = document.getElementById("textInput").value;
+    const words = textInput.split(" ");
+    const remainingWords = words.slice(Math.floor(currentOffset));
+    await playSequentialAudio(remainingWords);
+    isPaused = false;
+};
+
+// Event listeners
 document.getElementById("playButton").addEventListener("click", async () => {
     const textInput = document.getElementById("textInput").value;
     const words = textInput.split(" ");
-    await playSequentialAudio(words);
+    if (isPaused) {
+        resumeAudio();
+    } else {
+        await playSequentialAudio(words);
+    }
+
+    // Enable pause and stop buttons
+    document.getElementById("pauseButton").disabled = false;
+    document.getElementById("stopButton").disabled = false;
 });
 
+document.getElementById("pauseButton").addEventListener("click", () => {
+    pauseAudio();
+    document.getElementById("pauseButton").disabled = true;
+});
+
+document.getElementById("stopButton").addEventListener("click", () => {
+    stopAudio();
+    document.getElementById("pauseButton").disabled = true;
+    document.getElementById("stopButton").disabled = true;
+});
+ 
 // Preload audio files on page load
 preloadAudioFiles();
-// JavaScript source code
+
