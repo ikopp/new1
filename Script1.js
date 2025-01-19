@@ -329,11 +329,6 @@ const wordToAudioMap = {
 };
 
 const preloadedAudioBuffers = {};
-let currentSourceNodes = []; // Keep track of currently playing nodes
-let isPaused = false; // Pause state
-let currentOffset = 0; // Playback offset
-let currentStartTime = 0; // When playback started
-let words = []; // Array of words to play
 
 // Function to load and decode an audio file
 const loadAudioFile = async (url) => {
@@ -355,82 +350,126 @@ const preloadAudioFiles = async () => {
     }
 };
 
-// Play preloaded audio sequentially
-const playSequentialAudio = async (wordArray, startOffset = 0) => {
-    currentSourceNodes = [];
-    let currentTime = audioContext.currentTime - startOffset;
-    currentStartTime = audioContext.currentTime;
+// Combine audio buffers into one
+const createMergedAudioBuffer = async (wordArray) => {
+    const buffers = wordArray
+        .map((word) => preloadedAudioBuffers[word.toLowerCase()])
+        .filter(Boolean);
 
-    for (let i = 0; i < wordArray.length; i++) {
-        if (i < Math.floor(startOffset)) continue; // Skip words already played
+    if (buffers.length === 0) {
+        throw new Error("No valid audio files found for the given text.");
+    }
 
-        const word = wordArray[i];
-        const buffer = preloadedAudioBuffers[word.toLowerCase()];
-        if (buffer) {
-            const source = audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioContext.destination);
-            source.start(currentTime);
+    // Calculate total length
+    const totalLength = buffers.reduce((sum, buffer) => sum + buffer.length, 0);
 
-            // Track source node and its duration
-            currentSourceNodes.push({ source, duration: buffer.duration });
-            currentTime += buffer.duration;
-        } else {
-            console.warn(`No preloaded audio found for word: "${word}"`);
+    // Create a new buffer
+    const mergedBuffer = audioContext.createBuffer(
+        1, // Mono channel
+        totalLength,
+        audioContext.sampleRate
+    );
+
+    // Merge buffers
+    let offset = 0;
+    for (const buffer of buffers) {
+        mergedBuffer.copyToChannel(buffer.getChannelData(0), 0, offset);
+        offset += buffer.length;
+    }
+
+    return mergedBuffer;
+};
+
+// Convert an AudioBuffer to a Blob for playback
+const audioBufferToBlob = async (buffer) => {
+    const offlineAudioContext = new OfflineAudioContext(
+        1, // Mono channel
+        buffer.length,
+        buffer.sampleRate
+    );
+
+    const source = offlineAudioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offlineAudioContext.destination);
+    source.start();
+
+    const renderedBuffer = await offlineAudioContext.startRendering();
+    const wavData = audioBufferToWav(renderedBuffer);
+    return new Blob([wavData], { type: "audio/wav" });
+};
+
+// Convert AudioBuffer to WAV format
+const audioBufferToWav = (buffer) => {
+    const numOfChannels = buffer.numberOfChannels;
+    const sampleRate = buffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+
+    let blockAlign = numOfChannels * bitDepth / 8;
+    let byteRate = sampleRate * blockAlign;
+
+    let wavBuffer = new ArrayBuffer(44 + buffer.length * blockAlign);
+    let view = new DataView(wavBuffer);
+
+    // RIFF identifier
+    writeString(view, 0, "RIFF");
+    view.setUint32(4, 36 + buffer.length * blockAlign, true);
+    writeString(view, 8, "WAVE");
+
+    // fmt subchunk
+    writeString(view, 12, "fmt ");
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, format, true); // AudioFormat
+    view.setUint16(22, numOfChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitDepth, true);
+
+    // data subchunk
+    writeString(view, 36, "data");
+    view.setUint32(40, buffer.length * blockAlign, true);
+
+    // Write interleaved data
+    let offset = 44;
+    for (let i = 0; i < buffer.length; i++) {
+        for (let channel = 0; channel < numOfChannels; channel++) {
+            let sample = buffer.getChannelData(channel)[i];
+            let intSample = Math.max(-1, Math.min(1, sample));
+            view.setInt16(offset, intSample < 0 ? intSample * 0x8000 : intSample * 0x7FFF, true);
+            offset += 2;
         }
     }
+
+    return wavBuffer;
 };
 
-// Pause playback
-const pauseAudio = () => {
-    currentOffset = audioContext.currentTime - currentStartTime;
-    currentSourceNodes.forEach(({ source }) => source.stop());
-    currentSourceNodes = [];
-    isPaused = true;
-};
-
-// Stop playback
-const stopAudio = () => {
-    currentSourceNodes.forEach(({ source }) => source.stop());
-    currentSourceNodes = [];
-    currentOffset = 0;
-    isPaused = false;
-};
-
-// Resume playback
-const resumeAudio = async () => {
-    await playSequentialAudio(words, currentOffset);
-    isPaused = false;
-};
-
-// Event listeners
-document.getElementById("playButton").addEventListener("click", async () => {
-    const textInput = document.getElementById("textInput").value;
-
-    // Check if playback is paused
-    if (isPaused) {
-        resumeAudio();
-    } else {
-        // Start new playback from the beginning
-        words = textInput.split(" ");
-        currentOffset = 0; // Reset offset
-        await playSequentialAudio(words);
+// Helper function to write a string to a DataView
+const writeString = (view, offset, string) => {
+    for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
     }
+};
 
-    // Enable pause and stop buttons
-    document.getElementById("pauseButton").disabled = false;
-    document.getElementById("stopButton").disabled = false;
-});
+// Handle Generate Audio button click
+document.getElementById("generateButton").addEventListener("click", async () => {
+    const textInput = document.getElementById("textInput").value;
+    const words = textInput.split(" ");
 
-document.getElementById("pauseButton").addEventListener("click", () => {
-    pauseAudio();
-    document.getElementById("pauseButton").disabled = true;
-});
+    try {
+        const mergedBuffer = await createMergedAudioBuffer(words);
+        const audioBlob = await audioBufferToBlob(mergedBuffer);
 
-document.getElementById("stopButton").addEventListener("click", () => {
-    stopAudio();
-    document.getElementById("pauseButton").disabled = true;
-    document.getElementById("stopButton").disabled = true;
+        // Create an object URL for the audio blob
+        const audioURL = URL.createObjectURL(audioBlob);
+
+        // Set the URL to the audio player
+        const audioPlayer = document.getElementById("audioPlayer");
+        audioPlayer.src = audioURL;
+        audioPlayer.style.display = "block"; // Show the player
+    } catch (error) {
+        console.error("Error generating audio:", error);
+    }
 });
 
 // Preload audio files on page load
